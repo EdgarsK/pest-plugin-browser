@@ -17,13 +17,14 @@ use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Testing\Concerns\WithoutExceptionHandlingHandler;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\UrlGenerator;
 use Illuminate\Support\Uri;
 use Pest\Browser\Contracts\HttpServer;
 use Pest\Browser\Exceptions\ServerNotFoundException;
 use Pest\Browser\Execution;
 use Pest\Browser\GlobalState;
-use Pest\Browser\Playwright\Playwright;
+use Pest\Browser\Http\RequestBodyParser;
 use Psr\Log\NullLogger;
 use Symfony\Component\Mime\MimeTypes;
 use Throwable;
@@ -51,13 +52,18 @@ final class LaravelHttpServer implements HttpServer
     private ?Throwable $lastThrowable = null;
 
     /**
+     * A body parser for url-encoded and multipart requests
+     */
+    private RequestBodyParser $requestBodyParser;
+
+    /**
      * Creates a new laravel http server instance.
      */
     public function __construct(
         public readonly string $host,
         public readonly int $port,
     ) {
-        //
+        $this->requestBodyParser = new RequestBodyParser();
     }
 
     /**
@@ -237,39 +243,21 @@ final class LaravelHttpServer implements HttpServer
 
         $kernel = app()->make(HttpKernel::class);
 
-        $contentType = $request->getHeader('content-type') ?? '';
         $method = mb_strtoupper($request->getMethod());
         $rawBody = (string) $request->getBody();
-        $parameters = [];
-        if ($method !== 'GET' && str_starts_with(mb_strtolower($contentType), 'application/x-www-form-urlencoded')) {
-            parse_str($rawBody, $parameters);
-        }
-        $cookies = array_map(fn (RequestCookie $cookie): string => urldecode($cookie->getValue()), $request->getCookies());
-        $cookies = array_merge($cookies, test()->prepareCookiesForRequest()); // @phpstan-ignore-line
-        /** @var array<string, string> $serverVariables */
-        $serverVariables = test()->serverVariables(); // @phpstan-ignore-line
+        [$post, $files] = $this->requestBodyParser->parseForm($request, $rawBody);
 
         $symfonyRequest = Request::create(
             $absoluteUrl,
             $method,
-            $parameters,
-            $cookies,
-            [], // @TODO files...
-            $serverVariables,
+            $post,
+            $request->getCookies(),
+            $this->convertUploadedFiles($files),
+            [], // @TODO server variables...
             $rawBody
         );
 
         $symfonyRequest->headers->add($request->getHeaders());
-
-        // Set the Host header to match the configured host for subdomain routing
-        $configuredHost = Playwright::host();
-        if ($configuredHost !== null) {
-            $hostHeader = sprintf('%s:%d', $configuredHost, $this->port);
-            $symfonyRequest->headers->set('Host', $hostHeader);
-            // Also set SERVER_NAME for Laravel routing
-            $symfonyRequest->server->set('SERVER_NAME', $configuredHost);
-            $symfonyRequest->server->set('HTTP_HOST', $hostHeader);
-        }
 
         $debug = config('app.debug');
 
@@ -310,6 +298,28 @@ final class LaravelHttpServer implements HttpServer
             $response->headers->all(), // @phpstan-ignore-line
             $content,
         );
+    }
+
+    /**
+     * Convert the array to a Laravel file, to keep the test flag.
+     * If the file is empty, we return the original array, so Laravel
+     * would convert it to a null.
+     */
+    // @phpstan-ignore-next-line
+    private function convertUploadedFiles(array $files): array
+    {
+        // @phpstan-ignore-next-line
+        return array_map(function (array $file) {
+            if (isset($file['error'])) {
+                if ($file['error'] === UPLOAD_ERR_NO_FILE) {
+                    return $file;
+                }
+
+                return new UploadedFile($file['tmp_name'], $file['name'], $file['type'], $file['error'], true);
+            }
+
+            return $this->convertUploadedFiles($file);
+        }, $files);
     }
 
     /**
