@@ -7,6 +7,7 @@ namespace Pest\Browser;
 use Error;
 use Pest\Browser\Enums\BrowserType;
 use Pest\Browser\Enums\ColorScheme;
+use Pest\Browser\Enums\Device;
 use Pest\Browser\Exceptions\BrowserNotSupportedException;
 use Pest\Browser\Exceptions\OptionNotSupportedInParallelException;
 use Pest\Browser\Filters\UsesBrowserTestCaseMethodFilter;
@@ -26,14 +27,8 @@ final class Plugin implements Bootable, HandlesArguments, Terminable // @pest-ar
 {
     use HandleArguments;
 
-    /**
-     * Indicates whether the plugin has been booted.
-     */
     public static bool $booted = false;
 
-    /**
-     * Boots the plugin.
-     */
     public function boot(): void
     {
         TestSuite::getInstance()
@@ -57,39 +52,32 @@ final class Plugin implements Bootable, HandlesArguments, Terminable // @pest-ar
     }
 
     /**
-     * Handles the arguments passed to the plugin.
-     *
-     * @param  array<int, string>  $arguments}
+     * @param  array<int, string>  $arguments
      */
     public function handleArguments(array $arguments): array
     {
         if ($this->hasArgument('--headed', $arguments)) {
             Playwright::headed();
-
             $arguments = $this->popArgument('--headed', $arguments);
         }
 
         if ($this->hasArgument('--diff', $arguments)) {
             Playwright::setShouldDiffOnScreenshotAssertions();
-
             $arguments = $this->popArgument('--diff', $arguments);
         }
 
         if ($this->hasArgument('--debug', $arguments)) {
             Playwright::setShouldDebugAssertions();
-
             $arguments = $this->popArgument('--debug', $arguments);
         }
 
         if ($this->hasArgument('--dark', $arguments)) {
             Playwright::setColorScheme(ColorScheme::DARK);
-
             $arguments = $this->popArgument('--dark', $arguments);
         }
 
         if ($this->hasArgument('--light', $arguments)) {
             Playwright::setColorScheme(ColorScheme::LIGHT);
-
             $arguments = $this->popArgument('--light', $arguments);
         }
 
@@ -114,7 +102,31 @@ final class Plugin implements Bootable, HandlesArguments, Terminable // @pest-ar
             Playwright::setDefaultBrowserType($browser);
 
             unset($arguments[$index], $arguments[$index + 1]);
+            $arguments = array_values($arguments);
+        }
 
+        // NEW: --device handling
+        if ($this->hasArgument('--device', $arguments)) {
+            $index = array_search('--device', $arguments, true);
+
+            if ($index === false || ! isset($arguments[$index + 1])) {
+                throw new \InvalidArgumentException(
+                    'The "--device" argument requires a value. Usage: --device <device> (e.g., desktop, mobile, iphone_15_pro).'
+                );
+            }
+
+            $device = $arguments[$index + 1];
+
+            if (($device = Device::tryFrom($device)) === null) {
+                throw new \InvalidArgumentException(
+                    'The specified device is not supported. Supported values are: '.
+                    implode(', ', array_map(fn (Device $type): string => mb_strtolower($type->value), Device::cases()))
+                );
+            }
+
+            Playwright::setDefaultDevice($device);
+
+            unset($arguments[$index], $arguments[$index + 1]);
             $arguments = array_values($arguments);
         }
 
@@ -123,15 +135,11 @@ final class Plugin implements Bootable, HandlesArguments, Terminable // @pest-ar
         return $arguments;
     }
 
-    /**
-     * Terminates the plugin.
-     */
     public function terminate(): void
     {
         try {
             if (Parallel::isWorker() || Parallel::isEnabled() === false) {
                 ServerManager::instance()->http()->stop();
-
                 Playwright::close();
             }
 
@@ -147,17 +155,12 @@ final class Plugin implements Bootable, HandlesArguments, Terminable // @pest-ar
         }
     }
 
-    /**
-     * Returns the path where the test files are located.
-     */
     private function in(): string
     {
         return TestSuite::getInstance()->rootPath.DIRECTORY_SEPARATOR.TestSuite::getInstance()->testPath;
     }
 
     /**
-     * Validates that non-supported features are not used when running tests in parallel.
-     *
      * @throws OptionNotSupportedInParallelException
      */
     private function validateNonSupportedParallelFeatures(): void

@@ -6,6 +6,7 @@ namespace Pest\Browser;
 
 use Pest\Browser\Enums\BrowserType;
 use Pest\Browser\Enums\ColorScheme;
+use Pest\Browser\Enums\Device;
 use Pest\Browser\Playwright\Playwright;
 
 /**
@@ -41,6 +42,36 @@ final readonly class Configuration
     public function inSafari(): self
     {
         Playwright::setDefaultBrowserType(BrowserType::SAFARI);
+
+        return $this;
+    }
+
+    /**
+     * Sets default device to desktop.
+     */
+    public function onDesktop(): self
+    {
+        Playwright::setDefaultDevice(Device::DESKTOP);
+
+        return $this;
+    }
+
+    /**
+     * Sets default device to mobile.
+     */
+    public function onMobile(): self
+    {
+        Playwright::setDefaultDevice(Device::MOBILE);
+
+        return $this;
+    }
+
+    /**
+     * Sets default device explicitly.
+     */
+    public function on(Device $device): self
+    {
+        Playwright::setDefaultDevice($device);
 
         return $this;
     }

@@ -6,7 +6,6 @@ namespace Pest\Browser;
 
 use Pest\Browser\Api\ArrayablePendingAwaitablePage;
 use Pest\Browser\Api\PendingAwaitablePage;
-use Pest\Browser\Enums\Device;
 use Pest\Browser\Playwright\Client;
 use Pest\Browser\Playwright\Playwright;
 
@@ -45,7 +44,7 @@ trait Browsable
         if (is_string($url)) {
             return new PendingAwaitablePage(
                 Playwright::defaultBrowserType(),
-                Device::DESKTOP,
+                Playwright::defaultDevice(),
                 $url,
                 $options,
             );
@@ -54,7 +53,7 @@ trait Browsable
         return new ArrayablePendingAwaitablePage(
             array_map(fn (string $singleUrl): PendingAwaitablePage => new PendingAwaitablePage(
                 Playwright::defaultBrowserType(),
-                Device::DESKTOP,
+                Playwright::defaultDevice(),
                 $singleUrl,
                 $options,
             ), $url),
