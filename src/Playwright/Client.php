@@ -12,6 +12,7 @@ use Pest\Browser\Support\JavaScriptSerializer;
 use PHPUnit\Framework\ExpectationFailedException;
 use RuntimeException;
 use Throwable;
+use WeakReference;
 
 use function Amp\Websocket\Client\connect;
 
@@ -48,6 +49,32 @@ final class Client
      * @var array<string, true>
      */
     private array $reportResolutions = [];
+
+    /**
+     * Registry of Page instances for handling events.
+     *
+     * @var array<string, WeakReference<Page>>
+     */
+    private array $pages = [];
+
+    /**
+     * Current page instance for handling events.
+     */
+    private ?Page $currentPage = null;
+
+    /**
+     * Ids of the requests still waiting for their response.
+     *
+     * @var array<string, true>
+     */
+    private array $pendingRequests = [];
+
+    /**
+     * Responses read by a nested request, keyed by the id of the pending request they answer.
+     *
+     * @var array<string, array<mixed>>
+     */
+    private array $stashedResponses = [];
 
     /**
      * Returns the current client instance.
@@ -112,49 +139,67 @@ final class Client
             'metadata' => ['timeout' => $timeout, ...$meta],
         ]);
 
-        $this->websocketConnection->sendText($requestJson);
+        $connection = $this->websocketConnection;
+        $this->pendingRequests[$requestId] = true;
+        $connection->sendText($requestJson);
 
-        while (true) {
-            $responseJson = $this->fetch($this->websocketConnection);
-            $decoded = json_decode($responseJson, true);
+        try {
+            while (true) {
+                $decoded = $this->stashedResponses[$requestId]
+                    ?? json_decode($this->fetch($connection), true);
 
-            if (is_array($decoded) && $this->handleInternalMessage($decoded)) {
-                continue;
-            }
-
-            /** @var array{id: string|null, params: array{add: string|null}, error: array{error: array{message: string|null}}, errorDetails: array{customErrorMessage: string|null}} $response */
-            $response = $decoded;
-
-            // A response addressed to another request was stranded by a generator
-            // abandoned before its final frame was read — a caller that returns on
-            // a __create__ event, such as querySelector() or evaluateHandle(), leaves
-            // its response unconsumed. Processing it here would desynchronize the
-            // stream, and an error in that stranded response would fail this command.
-            if (isset($response['id']) && $response['id'] !== $requestId) {
-                continue;
-            }
-
-            if (isset($response['error']['error']['message'])) {
-                $message = $response['error']['error']['message'];
-
-                if (str_contains($message, 'Playwright was just installed or updated')) {
-                    throw new PlaywrightOutdatedException();
+                if (is_array($decoded) && $this->handleInternalMessage($decoded)) {
+                    continue;
                 }
 
-                // Since 1.61 a failed screenshot expectation reports only "Expect failed"
-                // here, and sends what actually differs in the error details instead.
-                if (is_string($response['errorDetails']['customErrorMessage'] ?? null)) {
-                    $message = $response['errorDetails']['customErrorMessage'];
+                if (is_array($decoded)) {
+                    $this->handlePageEvents($decoded);
                 }
 
-                throw new ExpectationFailedException($message);
-            }
+                /** @var array{id: string|null, params: array{add: string|null}, error: array{error: array{message: string|null}}, errorDetails: array{customErrorMessage: string|null}} $response */
+                $response = $decoded;
 
-            yield $response;
+                // A response addressed to another request was stranded by a generator
+                // abandoned before its final frame was read — a caller that returns on
+                // a __create__ event, such as querySelector() or evaluateHandle(), leaves
+                // its response unconsumed. Processing it here would desynchronize the
+                // stream, and an error in that stranded response would fail this command.
+                //
+                // The exception is a request made while another one is still waiting, such
+                // as a dialog handler answering the dialog a click opened: the response of
+                // the outer request may arrive first, and is kept for it.
+                if (isset($response['id']) && $response['id'] !== $requestId) {
+                    if (isset($this->pendingRequests[$response['id']])) {
+                        $this->stashedResponses[$response['id']] = $response;
+                    }
 
-            if (isset($response['id']) && $response['id'] === $requestId) {
-                break;
+                    continue;
+                }
+
+                if (isset($response['error']['error']['message'])) {
+                    $message = $response['error']['error']['message'];
+
+                    if (str_contains($message, 'Playwright was just installed or updated')) {
+                        throw new PlaywrightOutdatedException();
+                    }
+
+                    // Since 1.61 a failed screenshot expectation reports only "Expect failed"
+                    // here, and sends what actually differs in the error details instead.
+                    if (is_string($response['errorDetails']['customErrorMessage'] ?? null)) {
+                        $message = $response['errorDetails']['customErrorMessage'];
+                    }
+
+                    throw new ExpectationFailedException($message);
+                }
+
+                yield $response;
+
+                if (isset($response['id']) && $response['id'] === $requestId) {
+                    break;
+                }
             }
+        } finally {
+            unset($this->pendingRequests[$requestId], $this->stashedResponses[$requestId]);
         }
     }
 
@@ -198,6 +243,30 @@ final class Client
     public function timeout(): int
     {
         return $this->timeout;
+    }
+
+    /**
+     * Sets the current page for event handling.
+     */
+    public function setCurrentPage(Page $page): void
+    {
+        $this->currentPage = $page;
+    }
+
+    /**
+     * Registers the page for event handling.
+     */
+    public function registerPage(string $guid, Page $page): void
+    {
+        $this->pages[$guid] = WeakReference::create($page);
+    }
+
+    /**
+     * Removes the page from event handling.
+     */
+    public function unregisterPage(string $guid): void
+    {
+        unset($this->pages[$guid]);
     }
 
     /**
@@ -295,6 +364,79 @@ final class Client
         ]));
 
         return true;
+    }
+
+    /**
+     * Hands dialog, popup and dispose events to the pages they belong to.
+     *
+     * @param  array<mixed>  $message
+     */
+    private function handlePageEvents(array $message): void
+    {
+        $method = $message['method'] ?? null;
+        $guid = $message['guid'] ?? null;
+
+        if ($method === '__dispose__' && is_string($guid)) {
+            $this->unregisterPage($guid);
+
+            return;
+        }
+
+        $params = $message['params'] ?? null;
+
+        if ($method !== '__create__'
+            || ! is_array($params)
+            || ! is_string($params['guid'] ?? null)
+            || ! is_array($params['initializer'] ?? null)) {
+            return;
+        }
+
+        $type = $params['type'] ?? null;
+
+        if ($type === 'Dialog') {
+            /** @var array{type: string, message: string, defaultValue: string} $dialog */
+            $dialog = $params['initializer'];
+
+            $this->handleDialogCreation($params['guid'], $dialog);
+        }
+
+        if ($type === 'Page' && isset($params['initializer']['opener'])) {
+            /** @var array{mainFrame: array{guid: string}, opener: array{guid: string}} $popup */
+            $popup = $params['initializer'];
+
+            $this->handlePopupCreation($params['guid'], $popup);
+        }
+    }
+
+    /**
+     * Handles dialog creation events.
+     *
+     * @param  array{type: string, message: string, defaultValue: string}  $initializer
+     */
+    private function handleDialogCreation(string $dialogGuid, array $initializer): void
+    {
+        if ($this->currentPage instanceof Page && $this->currentPage->hasDialogHandler()) {
+            $this->currentPage->handleDialogEvent(new Dialog(
+                $dialogGuid,
+                $initializer['type'],
+                $initializer['message'],
+                $initializer['defaultValue'],
+            ));
+        }
+    }
+
+    /**
+     * Handles popup creation events.
+     *
+     * @param  array{mainFrame: array{guid: string}, opener: array{guid: string}}  $initializer
+     */
+    private function handlePopupCreation(string $popupGuid, array $initializer): void
+    {
+        $opener = ($this->pages[$initializer['opener']['guid']] ?? null)?->get();
+
+        if ($opener instanceof Page && $opener->hasPendingPopup()) {
+            $opener->handlePopupCreation($popupGuid, $initializer['mainFrame']['guid']);
+        }
     }
 
     /**

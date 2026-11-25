@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Pest\Browser;
 
 use Error;
+use InvalidArgumentException;
 use Pest\Browser\Enums\BrowserType;
 use Pest\Browser\Enums\ColorScheme;
+use Pest\Browser\Enums\Device;
 use Pest\Browser\Exceptions\BrowserNotSupportedException;
 use Pest\Browser\Exceptions\OptionNotSupportedInParallelException;
 use Pest\Browser\Filters\UsesBrowserTestCaseMethodFilter;
@@ -120,6 +122,31 @@ final class Plugin implements Bootable, HandlesArguments, Terminable // @pest-ar
             }
 
             Playwright::setDefaultBrowserType($browser);
+
+            unset($arguments[$index], $arguments[$index + 1]);
+
+            $arguments = array_values($arguments);
+        }
+
+        if ($this->hasArgument('--device', $arguments)) {
+            $index = array_search('--device', $arguments, true);
+
+            if ($index === false || ! isset($arguments[$index + 1])) {
+                throw new InvalidArgumentException(
+                    'The "--device" argument requires a value. Usage: --device <device> (e.g., desktop, mobile, iphone_15_pro).'
+                );
+            }
+
+            $device = $arguments[$index + 1];
+
+            if (($device = Device::tryFrom($device)) === null) {
+                throw new InvalidArgumentException(
+                    'The specified device is not supported. Supported values are: '.
+                    implode(', ', array_map(fn (Device $type): string => mb_strtolower($type->value), Device::cases()))
+                );
+            }
+
+            Playwright::setDefaultDevice($device);
 
             unset($arguments[$index], $arguments[$index + 1]);
 

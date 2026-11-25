@@ -6,6 +6,7 @@ namespace Pest\Browser\Playwright;
 
 use Pest\Browser\Enums\BrowserType;
 use Pest\Browser\Enums\ColorScheme;
+use Pest\Browser\Enums\Device;
 use Throwable;
 
 /**
@@ -63,6 +64,11 @@ final class Playwright
      * The default browser type.
      */
     private static BrowserType $defaultBrowserType = BrowserType::CHROME;
+
+    /**
+     * The default device.
+     */
+    private static Device $defaultDevice = Device::DESKTOP;
 
     /**
      * The default color scheme.
@@ -295,6 +301,22 @@ final class Playwright
     public static function defaultBrowserType(): BrowserType
     {
         return self::$defaultBrowserType;
+    }
+
+    /**
+     * Sets the default device.
+     */
+    public static function setDefaultDevice(Device $device): void
+    {
+        self::$defaultDevice = $device;
+    }
+
+    /**
+     * Get the default device.
+     */
+    public static function defaultDevice(): Device
+    {
+        return self::$defaultDevice;
     }
 
     /**
