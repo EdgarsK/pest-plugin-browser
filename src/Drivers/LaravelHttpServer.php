@@ -529,7 +529,8 @@ final class LaravelHttpServer implements HttpServer
      * Reads a multipart body the way PHP does for a real upload: the fields
      * into the parameters, each file into a temporary file wrapped in an
      * upload in test mode (there is no real upload for `is_uploaded_file()`
-     * to recognise here). Two parts with the same name keep the last file,
+     * to recognise here). A file input left empty is skipped, as PHP
+     * leaves it out. Two parts with the same name keep the last file,
      * and a nested name such as `files[avatar]` stays flat where PHP would
      * nest it.
      *
@@ -554,6 +555,10 @@ final class LaravelHttpServer implements HttpServer
             }
 
             if (preg_match('/filename="([^"]*)"/', $rawHeaders, $fileName) === 1) {
+                if ($fileName[1] === '') {
+                    continue;
+                }
+
                 $path = (string) tempnam(sys_get_temp_dir(), 'pest-upload-');
                 file_put_contents($path, $content);
                 $mimeType = preg_match('/Content-Type:\s*([^\r\n]+)/i', $rawHeaders, $type) === 1 ? mb_trim($type[1]) : null;

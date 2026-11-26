@@ -71,3 +71,22 @@ it('hands the application a binary file byte for byte', function (): void {
 
     unlink($tempFile);
 });
+
+it('leaves a file input that was left empty out of the files', function (): void {
+    Route::get('/', fn (): string => '
+        <form method="post" action="/upload" enctype="multipart/form-data">
+            <input type="text" name="label" value="no new avatar">
+            <input type="file" id="avatar" name="avatar">
+            <button type="submit">Upload</button>
+        </form>
+    ');
+    Route::post('/upload', fn (Request $request): string => sprintf(
+        'has file: %s, label "%s"',
+        $request->hasFile('avatar') ? 'yes' : 'no',
+        $request->input('label'),
+    ));
+
+    visit('/')
+        ->click('Upload')
+        ->assertSee('has file: no, label "no new avatar"');
+});
